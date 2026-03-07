@@ -6,7 +6,7 @@ const db = require('../../db')
 router.post('/schedule', async (req, res) => {
   try {
     const { meetingUrl, title, attendees, config } = req.body
-    const userId = req.auth.userId
+    const { userId, sessionClaims } = req.auth()
 
     const platform = meetingUrl.includes('zoom.us') ? 'zoom'
                    : meetingUrl.includes('meet.google.com') ? 'meet'
@@ -16,10 +16,11 @@ router.post('/schedule', async (req, res) => {
       return res.status(400).json({ error: 'Unsupported platform. Use Zoom or Google Meet.' })
     }
 
-    // Check minutes quota
-    const user = await db.getUserByClerkId(userId)
+    // Get or auto-create user
+    let user = await db.getUserByClerkId(userId)
     if (!user) {
-      return res.status(404).json({ error: 'User not found. Please complete onboarding.' })
+      const email = sessionClaims?.email || `${userId}@placeholder.com`
+      user = await db.createUser({ clerkId: userId, email })
     }
 
     if (user.minutes_used >= user.minutes_quota) {
@@ -48,7 +49,8 @@ router.post('/schedule', async (req, res) => {
 // GET /api/meetings/:id
 router.get('/:id', async (req, res) => {
   try {
-    const meeting = await db.getMeetingWithOutput(req.params.id, req.auth.userId)
+    const { userId } = req.auth()
+    const meeting = await db.getMeetingWithOutput(req.params.id, userId)
     if (!meeting) return res.status(404).json({ error: 'Not found' })
     res.json(meeting)
   } catch (err) {
@@ -60,7 +62,14 @@ router.get('/:id', async (req, res) => {
 // GET /api/meetings
 router.get('/', async (req, res) => {
   try {
-    const meetings = await db.getUserMeetings(req.auth.userId, {
+    const { userId, sessionClaims } = req.auth()
+    let user = await db.getUserByClerkId(userId)
+    if (!user) {
+      const email = sessionClaims?.email || `${userId}@placeholder.com`
+      user = await db.createUser({ clerkId: userId, email })
+    }
+
+    const meetings = await db.getUserMeetings(userId, {
       limit: parseInt(req.query.limit) || 20,
       offset: parseInt(req.query.offset) || 0
     })

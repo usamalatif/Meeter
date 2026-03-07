@@ -1,62 +1,45 @@
-const { launchZoomBot } = require('./zoom/zoom-launcher')
+const { createRecallBot } = require('./recall-bot')
+const { MeetingState } = require('./shared/meeting-state')
+const { AgentBrain } = require('./shared/agent-brain')
 const db = require('../db')
 
-const activeBots = new Map() // meetingId → bot process/instance
+// meetingId → { state, brain, recallBotId }
+const activeMeetings = new Map()
 
 async function launchMeetBot(meeting) {
   await db.updateMeetingStatus(meeting.id, 'active')
 
   try {
-    if (meeting.platform === 'zoom') {
-      const { meetingNumber, passcode } = parseZoomUrl(meeting.meetingUrl)
-      const botProcess = await launchZoomBot(meetingNumber, passcode, meeting.id)
-      activeBots.set(meeting.id, botProcess)
+    const recallBot = await createRecallBot(meeting.meeting_url, meeting.id)
 
-      botProcess.on('exit', () => {
-        activeBots.delete(meeting.id)
-      })
+    const state = new MeetingState(meeting.id)
+    const brain = new AgentBrain(state)
 
-    } else if (meeting.platform === 'meet') {
-      const { spawn } = require('child_process')
-      const user = await db.getUserById(meeting.userId)
+    activeMeetings.set(meeting.id, {
+      state,
+      brain,
+      recallBotId: recallBot.id
+    })
 
-      const botProcess = spawn('python3', [
-        './bots/meet/meet-bot.py',
-        '--meeting-uri', meeting.meetingUrl,
-        '--meeting-id', meeting.id,
-        '--user-email', user.email
-      ], {
-        env: process.env,
-        stdio: ['ignore', 'pipe', 'pipe']
-      })
-
-      activeBots.set(meeting.id, botProcess)
-
-      botProcess.stdout.on('data', d => console.log('[MeetBot]', d.toString()))
-      botProcess.stderr.on('data', d => console.error('[MeetBot:err]', d.toString()))
-      botProcess.on('exit', () => {
-        activeBots.delete(meeting.id)
-      })
-    }
-
-    await db.updateMeetingStatus(meeting.id, 'completed')
+    console.log(`[Orchestrator] Recall bot ${recallBot.id} launched for meeting ${meeting.id}`)
+    return recallBot
   } catch (err) {
-    console.error(`[Orchestrator] Bot launch failed for ${meeting.id}:`, err)
+    console.error(`[Orchestrator] Bot launch failed for ${meeting.id}:`, err.message)
     await db.updateMeetingStatus(meeting.id, 'failed')
+    throw err
   }
 }
 
-function parseZoomUrl(url) {
-  const meetingMatch = url.match(/\/j\/(\d+)/)
-  const passcodeMatch = url.match(/pwd=([^&]+)/)
-  return {
-    meetingNumber: meetingMatch?.[1],
-    passcode: passcodeMatch?.[1] || ''
-  }
+function getMeetingContext(meetingId) {
+  return activeMeetings.get(meetingId) || null
 }
 
-function getActiveBots() {
-  return Array.from(activeBots.keys())
+function removeMeeting(meetingId) {
+  activeMeetings.delete(meetingId)
 }
 
-module.exports = { launchMeetBot, getActiveBots }
+function getActiveMeetings() {
+  return Array.from(activeMeetings.keys())
+}
+
+module.exports = { launchMeetBot, getMeetingContext, removeMeeting, getActiveMeetings }

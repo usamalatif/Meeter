@@ -1,17 +1,30 @@
 module.exports = {
   apps: [
     {
-      name: 'api-server',
+      name: 'api',
       script: './api/server.js',
       instances: 1,
+      autorestart: true,
+      watch: false,
       env: { NODE_ENV: 'production', PORT: 3001 }
     },
     {
-      name: 'action-worker',
+      name: 'worker',
       script: './workers/action-queue.js',
-      instances: 2,
+      instances: 1,
+      autorestart: true,
+      watch: false,
       env: { NODE_ENV: 'production' }
+    },
+    {
+      name: 'dashboard',
+      script: 'node_modules/.bin/next',
+      args: 'start',
+      cwd: './dashboard',
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      env: { NODE_ENV: 'production', PORT: 3000 }
     }
-    // Bots are spawned dynamically per meeting — not managed by PM2
   ]
 }

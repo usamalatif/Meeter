@@ -1,6 +1,11 @@
-const router = require('express').Router()
+const express = require('express')
+const router = express.Router()
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
 const db = require('../../db')
+const { getMeetingContext, removeMeeting } = require('../../bots/bot-orchestrator')
+const { enqueuePostMeeting } = require('../../workers/action-queue')
+const { speakInMeeting } = require('../../bots/recall-bot')
+const { generateSpeech } = require('../../bots/shared/tts-engine')
 
 const PLAN_QUOTAS = {
   price_starter_monthly: 500,
@@ -60,6 +65,73 @@ router.post('/stripe', async (req, res) => {
   }
 
   res.json({ received: true })
+})
+
+// ─── Recall.ai — Real-time transcript ────────────────────────────────────────
+router.post('/recall/transcript', express.json(), async (req, res) => {
+  res.json({ received: true }) // respond immediately so Recall doesn't retry
+
+  try {
+    const { event, data } = req.body
+    if (event !== 'transcript.data') return
+
+    const meetingId = data.bot?.metadata?.meetingId
+    if (!meetingId) return
+
+    const context = getMeetingContext(meetingId)
+    if (!context) return
+
+    const words = data.data?.words || []
+    const text = words.map(w => w.text).join(' ').trim()
+    const speaker = data.data?.participant?.name || 'Unknown'
+
+    if (!text) return
+
+    await context.state.addTranscript({ text, speaker, timestamp: Date.now() })
+    console.log(`[Recall] [${meetingId}] ${speaker}: ${text}`)
+
+    if (context.state.shouldRunAgentCheck()) {
+      const decision = await context.brain.evaluate()
+      if (decision.shouldSpeak && context.recallBotId) {
+        console.log(`[Aria] Speaking: "${decision.message}"`)
+        const { publicUrl } = await generateSpeech(decision.message)
+        await speakInMeeting(context.recallBotId, publicUrl)
+        await context.state.logAgentSpeech(decision.message)
+      }
+    }
+  } catch (err) {
+    console.error('[Webhook/Recall/Transcript] Error:', err.message)
+  }
+})
+
+// ─── Recall.ai — Bot status changes ──────────────────────────────────────────
+router.post('/recall/status', express.json(), async (req, res) => {
+  res.json({ received: true })
+
+  try {
+    const { event, data } = req.body
+    const meetingId = data.bot?.metadata?.meetingId
+    if (!meetingId) return
+
+    console.log(`[Recall] Status event: ${event} for meeting: ${meetingId}`)
+
+    if (event === 'bot.done' || event === 'bot.call_ended') {
+      const context = getMeetingContext(meetingId)
+      const fullTranscript = context?.state?.getFullTranscript() || ''
+      removeMeeting(meetingId)
+
+      await enqueuePostMeeting(meetingId, fullTranscript)
+        .catch(e => console.error('[Recall] Failed to enqueue post-meeting job:', e.message))
+    }
+
+    if (event === 'bot.fatal') {
+      console.error(`[Recall] Bot fatal error for meeting: ${meetingId}`)
+      removeMeeting(meetingId)
+      await db.updateMeetingStatus(meetingId, 'failed')
+    }
+  } catch (err) {
+    console.error('[Webhook/Recall/Status] Error:', err.message)
+  }
 })
 
 module.exports = router

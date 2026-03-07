@@ -4,13 +4,13 @@ const db = require('../../db')
 // GET /api/users/me
 router.get('/me', async (req, res) => {
   try {
-    let user = await db.getUserByClerkId(req.auth.userId)
+    let user = await db.getUserByClerkId(req.auth().userId)
 
     // Auto-create user on first API call
     if (!user) {
       // Get email from Clerk session claims
-      const email = req.auth.sessionClaims?.email || `${req.auth.userId}@placeholder.com`
-      user = await db.createUser({ clerkId: req.auth.userId, email })
+      const email = req.auth().sessionClaims?.email || `${req.auth().userId}@placeholder.com`
+      user = await db.createUser({ clerkId: req.auth().userId, email })
     }
 
     const userWithIntegrations = await db.getUserWithIntegrations(user.id)
@@ -25,7 +25,7 @@ router.get('/me', async (req, res) => {
 router.post('/integrations', async (req, res) => {
   try {
     const { service, credentials, config } = req.body
-    const user = await db.getUserByClerkId(req.auth.userId)
+    const user = await db.getUserByClerkId(req.auth().userId)
     if (!user) return res.status(404).json({ error: 'User not found' })
 
     const integration = await db.saveIntegration(user.id, service, credentials, config)
@@ -39,7 +39,7 @@ router.post('/integrations', async (req, res) => {
 // DELETE /api/users/integrations/:service
 router.delete('/integrations/:service', async (req, res) => {
   try {
-    const user = await db.getUserByClerkId(req.auth.userId)
+    const user = await db.getUserByClerkId(req.auth().userId)
     if (!user) return res.status(404).json({ error: 'User not found' })
 
     await db.removeIntegration(user.id, req.params.service)

@@ -22,23 +22,23 @@ if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true })
 
 async function generateSpeech(text) {
   const hash = crypto.createHash('md5').update(text).digest('hex')
-  const cachePath = path.join(CACHE_DIR, `${hash}.mp3`)
+  const filename = `${hash}.mp3`
+  const cachePath = path.join(CACHE_DIR, filename)
 
-  // Return cached audio if available
-  if (fs.existsSync(cachePath)) {
-    return fs.readFileSync(cachePath)
+  if (!fs.existsSync(cachePath)) {
+    const response = await openai.audio.speech.create({
+      model: 'tts-1',
+      voice: 'nova',
+      input: text,
+      speed: 0.95,
+    })
+    const buffer = Buffer.from(await response.arrayBuffer())
+    fs.writeFileSync(cachePath, buffer)
   }
 
-  const response = await openai.audio.speech.create({
-    model: 'tts-1',
-    voice: 'nova',
-    input: text,
-    speed: 0.95,  // slightly slower = more natural
-  })
-
-  const buffer = Buffer.from(await response.arrayBuffer())
-  fs.writeFileSync(cachePath, buffer)
-  return buffer
+  // Return both the buffer and the public URL path
+  const publicUrl = `${process.env.API_URL}/audio/${filename}`
+  return { buffer: fs.readFileSync(cachePath), publicUrl }
 }
 
 async function preCacheCommonPhrases() {

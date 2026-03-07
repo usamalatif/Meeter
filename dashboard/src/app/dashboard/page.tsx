@@ -34,7 +34,7 @@ export default function DashboardPage() {
   async function loadMeetings() {
     try {
       const data = await getMeetings()
-      setMeetings(data)
+      setMeetings(Array.isArray(data) ? data : [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load meetings')
     } finally {

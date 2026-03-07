@@ -1,0 +1,1480 @@
+# AI Meeting Agent — Complete Technical Spec
+> Zoom + Google Meet | Self-Hosted Bots | Agent Brain | Full Stack
+> Bootstrap build — ~$30/mo fixed cost | Live in 10 weeks
+
+---
+
+## Table of Contents
+1. [System Architecture](#1-system-architecture)
+2. [Credentials & Environment Setup](#2-credentials--environment-setup)
+3. [Google Meet Bot](#3-google-meet-bot)
+4. [Zoom Bot](#4-zoom-bot)
+5. [Shared STT Pipeline](#5-shared-stt-pipeline)
+6. [Agent Brain — Claude API](#6-agent-brain--claude-api)
+7. [Agent Behavior & Prompt System](#7-agent-behavior--prompt-system)
+8. [TTS — Agent Voice](#8-tts--agent-voice)
+9. [Post-Meeting Actions](#9-post-meeting-actions)
+10. [Database Schema](#10-database-schema)
+11. [Backend API & Bot Orchestrator](#11-backend-api--bot-orchestrator)
+12. [Billing & Stripe](#12-billing--stripe)
+13. [Deployment](#13-deployment)
+14. [Environment Variables](#14-environment-variables)
+15. [Week-by-Week Roadmap](#15-week-by-week-roadmap)
+
+---
+
+## 1. System Architecture
+
+### Data Flow
+```
+User pastes Zoom/Meet link into dashboard
+        ↓
+Bot Orchestrator spawns meeting-specific bot process
+        ↓
+Bot joins meeting as "Aria (AI Assistant)"
+        ↓
+Audio stream → Deepgram STT → real-time transcript chunks
+        ↓
+Every 20s: transcript chunk → Claude Haiku (agent check loop)
+        ↓
+Claude decides: should agent speak? what question?
+        ↓
+If yes: text → OpenAI TTS → audio injected back into meeting
+        ↓
+Meeting ends → full transcript → post-meeting pipeline
+        ↓
+Claude Sonnet: summary + action items + email + tickets (ONE call)
+        ↓
+Parallel execution: email sent, Jira tickets created, Slack posted
+        ↓
+Meeting saved to DB → visible in user dashboard
+```
+
+### Repository Structure
+```
+ai-meeting-agent/
+├── bots/
+│   ├── meet/
+│   │   ├── meet-bot.py            # Google Meet Media API bot
+│   │   ├── meet-auth.py           # Service account auth
+│   │   └── meet-audio.py          # Audio stream handler
+│   ├── zoom/
+│   │   ├── zoom-bot.js            # Zoom Meeting SDK bot
+│   │   ├── zoom-signature.js      # JWT signature generator
+│   │   ├── zoom-audio.js          # PCM audio handler
+│   │   └── zoom-launcher.js       # Xvfb + Electron launcher
+│   └── shared/
+│       ├── stt-stream.js          # Deepgram real-time STT
+│       ├── agent-brain.js         # Claude API decision loop
+│       ├── tts-engine.js          # OpenAI TTS + caching
+│       ├── meeting-state.js       # Live context tracker
+│       └── bot-orchestrator.js    # Spawns correct bot per platform
+├── actions/
+│   ├── post-meeting.js            # Orchestrates all post-meeting actions
+│   ├── email-sender.js            # Gmail follow-ups
+│   ├── jira-tickets.js            # Jira/Linear ticket creation
+│   ├── slack-notify.js            # Slack summary posting
+│   └── agenda-builder.js          # Next meeting agenda
+├── api/
+│   ├── server.js                  # Express API
+│   └── routes/
+│       ├── meetings.js
+│       ├── users.js
+│       └── webhooks.js            # Stripe webhooks
+├── dashboard/                     # Next.js frontend
+├── db/
+│   └── schema.sql
+├── workers/
+│   └── action-queue.js            # BullMQ async job processor
+├── ecosystem.config.js            # PM2 process config
+├── requirements.txt               # Python deps
+├── package.json
+└── .env.example
+```
+
+### Tech Stack
+| Layer | Technology | Purpose |
+|---|---|---|
+| Meet Bot | Google Meet Media API (Python) | Join Meet, stream audio |
+| Zoom Bot | Zoom Meeting SDK (Node.js + Electron + Xvfb) | Join Zoom, stream audio |
+| STT | Deepgram Nova-2 | Real-time transcription + speaker diarization |
+| Agent Brain | Claude Haiku (checks) + Sonnet (actions) | Decisions + post-meeting output |
+| TTS | OpenAI TTS `tts-1` voice `nova` | Agent speaks back in meeting |
+| Backend | Express.js (Node 20) | API server |
+| Bot Logic | Python 3.11 (Meet) + Node.js (Zoom) | Platform-specific bots |
+| Database | PostgreSQL via Supabase (free) | Persistent storage |
+| Cache/Queue | Redis + BullMQ | Session state + async actions |
+| Auth | Clerk | User auth + JWT |
+| Frontend | Next.js on Vercel (free) | User dashboard |
+| Billing | Stripe | Subscriptions + webhooks |
+| Infrastructure | EC2 t3.medium ($30/mo) | Runs all bots + API |
+
+---
+
+## 2. Credentials & Environment Setup
+
+### 2.1 Google Cloud — Meet Media API
+
+**Step-by-step:**
+1. Go to `console.cloud.google.com` → Create project: `ai-meeting-agent`
+2. Enable these APIs (search in API Library):
+   - Google Meet API
+   - Google Calendar API
+   - Gmail API
+3. IAM & Admin → Service Accounts → Create Service Account
+   - Name: `meeting-bot-service`
+   - Role: Project > Editor
+4. Click service account → Keys → Add Key → JSON → Download
+   - Save as: `credentials/google-service-account.json`
+5. Enable Domain-Wide Delegation:
+   - Edit service account → Enable G Suite Domain-wide Delegation
+   - Copy the Client ID
+6. Google Workspace Admin (`admin.google.com`):
+   - Security → API Controls → Domain-wide Delegation → Add new
+   - Client ID: paste from above
+   - OAuth Scopes:
+     ```
+     https://www.googleapis.com/auth/meetings.space.readonly
+     https://www.googleapis.com/auth/calendar.readonly
+     https://www.googleapis.com/auth/gmail.send
+     ```
+
+> **IMPORTANT:** Meet Media API requires allowlist approval for production.
+> Apply at: `developers.google.com/meet/media-api/guides/overview`
+> For dev/testing: use your own Google Workspace — no approval needed.
+> Apply early — takes 1–2 weeks.
+
+### 2.2 Zoom — Meeting SDK
+
+1. Go to `marketplace.zoom.us` → Develop → Build App → Meeting SDK
+2. App name: `AI Meeting Agent Bot`
+3. Credentials tab → copy **SDK Key** and **SDK Secret**
+4. Features tab → enable: Join meeting before host
+5. For beta use: Development credentials work without Marketplace review
+
+### 2.3 Deepgram
+
+1. Sign up at `deepgram.com` → free tier: $200 credit (~33,000 minutes)
+2. Console → API Keys → Create → copy key
+3. Use model: `nova-2`, enable: `diarize=true`, `punctuate=true`, `smart_format=true`
+
+### 2.4 Anthropic
+
+1. `console.anthropic.com` → API Keys → Create → copy
+2. Agent check model: `claude-haiku-4-5-20251001` (cheap, fast)
+3. Post-meeting model: `claude-sonnet-4-20250514` (high quality)
+4. Set $50/month usage cap initially
+
+### 2.5 OpenAI (TTS only)
+
+1. `platform.openai.com` → API Keys → Create → copy
+2. Model: `tts-1`, voice: `nova` (natural female) or `onyx` (male)
+3. Cost: $0.015 per 1,000 characters
+
+### 2.6 .env File
+```env
+# Google Meet
+GOOGLE_SERVICE_ACCOUNT_PATH=./credentials/google-service-account.json
+GOOGLE_DELEGATED_EMAIL=admin@yourcompany.com
+
+# Zoom
+ZOOM_SDK_KEY=your_zoom_sdk_key
+ZOOM_SDK_SECRET=your_zoom_sdk_secret
+
+# Deepgram
+DEEPGRAM_API_KEY=your_deepgram_key
+
+# Anthropic
+ANTHROPIC_API_KEY=your_anthropic_key
+
+# OpenAI (TTS only)
+OPENAI_API_KEY=your_openai_key
+
+# Database
+DATABASE_URL=postgresql://user:pass@localhost:5432/meeting_agent
+REDIS_URL=redis://localhost:6379
+
+# Auth
+CLERK_SECRET_KEY=your_clerk_secret
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=your_clerk_publishable
+
+# Stripe
+STRIPE_SECRET_KEY=your_stripe_secret
+STRIPE_WEBHOOK_SECRET=your_webhook_secret
+
+# Integrations (OAuth app credentials — not user tokens)
+JIRA_CLIENT_ID=your_jira_oauth_client_id
+JIRA_CLIENT_SECRET=your_jira_oauth_secret
+SLACK_CLIENT_ID=your_slack_app_client_id
+SLACK_CLIENT_SECRET=your_slack_app_secret
+
+# App
+PORT=3001
+NODE_ENV=production
+BOT_DISPLAY_NAME=Aria (AI Assistant)
+```
+
+---
+
+## 3. Google Meet Bot
+
+### 3.1 Installation
+```bash
+pip install google-auth google-auth-httplib2 google-api-python-client
+pip install google-apps-meet
+pip install deepgram-sdk
+pip install asyncio websockets
+```
+
+### 3.2 `bots/meet/meet-auth.py`
+```python
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+import os
+
+SCOPES = [
+    'https://www.googleapis.com/auth/meetings.space.readonly',
+    'https://www.googleapis.com/auth/calendar.readonly',
+    'https://www.googleapis.com/auth/gmail.send',
+]
+
+def get_credentials(user_email: str):
+    """Get delegated credentials for a specific user"""
+    credentials = service_account.Credentials.from_service_account_file(
+        os.environ['GOOGLE_SERVICE_ACCOUNT_PATH'],
+        scopes=SCOPES
+    )
+    # Impersonate the user so bot can join their meetings
+    return credentials.with_subject(user_email)
+
+def get_meet_service(user_email: str):
+    creds = get_credentials(user_email)
+    return build('meet', 'v2', credentials=creds)
+```
+
+### 3.3 `bots/meet/meet-bot.py`
+```python
+import asyncio
+import os
+from meet_auth import get_credentials, get_meet_service
+from meet_audio import AudioStreamHandler
+import sys
+sys.path.append('../shared')
+from stt_stream import DeepgramSTT
+from agent_brain import AgentBrain
+from meeting_state import MeetingState
+
+class MeetBot:
+    def __init__(self, meeting_uri: str, meeting_id: str, user_email: str):
+        self.meeting_uri = meeting_uri
+        self.meeting_id = meeting_id
+        self.user_email = user_email
+        self.state = MeetingState(meeting_id)
+        self.stt = DeepgramSTT()
+        self.brain = AgentBrain(self.state)
+        self.audio_handler = AudioStreamHandler()
+        self.is_active = False
+
+    async def join(self):
+        creds = get_credentials(self.user_email)
+        meet_service = get_meet_service(self.user_email)
+
+        # Extract space code from URL (e.g. abc-defg-hij)
+        space_code = self.meeting_uri.split('/')[-1]
+
+        conference = meet_service.conferenceRecords().list(
+            filter=f'space.name=spaces/{space_code}'
+        ).execute()
+
+        print(f'[MeetBot] Joining: {self.meeting_uri}')
+        self.is_active = True
+
+        await self.audio_handler.connect(
+            conference_id=conference['conferenceRecords'][0]['name'],
+            credentials=creds,
+            on_audio_chunk=self.handle_audio_chunk,
+            on_meeting_end=self.handle_meeting_end
+        )
+
+    async def handle_audio_chunk(self, pcm_data: bytes, speaker_id: str):
+        transcript_chunk = await self.stt.process_chunk(pcm_data)
+        if not transcript_chunk:
+            return
+
+        await self.state.add_transcript(
+            text=transcript_chunk['text'],
+            speaker=speaker_id,
+            timestamp=transcript_chunk['timestamp']
+        )
+
+        if self.state.should_run_agent_check():
+            decision = await self.brain.evaluate()
+            if decision.get('shouldSpeak'):
+                await self.speak(decision['message'])
+
+    async def speak(self, text: str):
+        from tts_engine import generate_speech
+        audio_bytes = await generate_speech(text)
+        await self.audio_handler.inject_audio(audio_bytes)
+        await self.state.log_agent_speech(text)
+        print(f'[MeetBot] Agent spoke: {text}')
+
+    async def handle_meeting_end(self):
+        print(f'[MeetBot] Meeting ended: {self.meeting_id}')
+        self.is_active = False
+        from post_meeting import run_post_meeting_pipeline
+        await run_post_meeting_pipeline(self.meeting_id, self.state.get_full_transcript())
+```
+
+### 3.4 `bots/meet/meet-audio.py`
+```python
+import asyncio
+import os
+from google.apps.meet.v2 import SpacesServiceClient
+from google.apps.meet.v2.types import ConnectActiveConferenceRequest
+
+class AudioStreamHandler:
+    def __init__(self):
+        self.client = None
+        self.session = None
+        self.is_connected = False
+
+    async def connect(self, conference_id, credentials, on_audio_chunk, on_meeting_end):
+        self.on_audio_chunk = on_audio_chunk
+        self.on_meeting_end = on_meeting_end
+        self.client = SpacesServiceClient(credentials=credentials)
+
+        request = ConnectActiveConferenceRequest(
+            name=conference_id,
+            bot_participant={
+                'display_name': os.environ.get('BOT_DISPLAY_NAME', 'Aria (AI Assistant)')
+            }
+        )
+
+        self.session = self.client.connect_active_conference(request)
+        self.is_connected = True
+        await self._receive_loop()
+
+    async def _receive_loop(self):
+        async for response in self.session:
+            if hasattr(response, 'audio'):
+                await self.on_audio_chunk(
+                    response.audio.raw_audio,
+                    response.audio.participant_id
+                )
+            elif hasattr(response, 'conference_ended'):
+                await self.on_meeting_end()
+                break
+
+    async def inject_audio(self, audio_bytes: bytes):
+        if self.session and self.is_connected:
+            await self.session.send_audio(audio_bytes)
+
+    async def disconnect(self):
+        if self.session:
+            await self.session.close()
+        self.is_connected = False
+```
+
+---
+
+## 4. Zoom Bot
+
+### 4.1 Installation
+```bash
+npm install @zoom/meetingsdk electron
+sudo apt-get install -y xvfb libgtk-3-0 libnss3 libxss1 libasound2
+```
+
+### 4.2 `bots/zoom/zoom-signature.js`
+```javascript
+const crypto = require('crypto')
+
+function generateZoomSignature(meetingNumber, role = 0) {
+  // role 0 = attendee (bot), role 1 = host
+  const sdkKey    = process.env.ZOOM_SDK_KEY
+  const sdkSecret = process.env.ZOOM_SDK_SECRET
+  const iat = Math.round(new Date().getTime() / 1000) - 30
+  const exp = iat + 60 * 60 * 2
+
+  const header  = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
+  const payload = Buffer.from(JSON.stringify({ sdkKey, mn: meetingNumber, role, iat, exp, tokenExp: exp })).toString('base64url')
+  const sig     = crypto.createHmac('sha256', sdkSecret).update(`${header}.${payload}`).digest('base64url')
+
+  return `${header}.${payload}.${sig}`
+}
+
+module.exports = { generateZoomSignature }
+```
+
+### 4.3 `bots/zoom/zoom-bot.js`
+```javascript
+const { ZoomMtgEmbedded } = require('@zoom/meetingsdk')
+const { generateZoomSignature } = require('./zoom-signature')
+const { DeepgramSTT } = require('../shared/stt-stream')
+const { AgentBrain } = require('../shared/agent-brain')
+const { MeetingState } = require('../shared/meeting-state')
+const { generateSpeech } = require('../shared/tts-engine')
+
+class ZoomBot {
+  constructor(meetingNumber, passcode, meetingId) {
+    this.meetingNumber = meetingNumber
+    this.passcode = passcode
+    this.meetingId = meetingId
+    this.state = new MeetingState(meetingId)
+    this.stt = new DeepgramSTT()
+    this.brain = new AgentBrain(this.state)
+    this.client = ZoomMtgEmbedded.createClient()
+    this.isActive = false
+  }
+
+  async join() {
+    const meetingContainer = document.createElement('div')
+    document.body.appendChild(meetingContainer)
+
+    await this.client.init({
+      zoomAppRoot: meetingContainer,
+      language: 'en-US',
+      customize: {
+        video: { isResizable: false, viewSizes: { default: { width: 1, height: 1 } } },
+        toolbar: { buttons: [] }
+      }
+    })
+
+    await this.client.join({
+      sdkKey: process.env.ZOOM_SDK_KEY,
+      signature: generateZoomSignature(this.meetingNumber, 0),
+      meetingNumber: this.meetingNumber,
+      password: this.passcode,
+      userName: process.env.BOT_DISPLAY_NAME || 'Aria (AI Assistant)',
+      userEmail: 'bot@yourdomain.com',
+    })
+
+    this.isActive = true
+    this._setupAudioCapture()
+    this._setupEventListeners()
+  }
+
+  _setupAudioCapture() {
+    this.client.on('audio-statistic-data-change', async (payload) => {
+      const { buffer, speakerId } = payload.data
+      if (!buffer || buffer.byteLength === 0) return
+
+      const chunk = await this.stt.processChunk(Buffer.from(buffer))
+      if (!chunk?.text) return
+
+      await this.state.addTranscript({ text: chunk.text, speaker: speakerId, timestamp: Date.now() })
+
+      if (this.state.shouldRunAgentCheck()) {
+        const decision = await this.brain.evaluate()
+        if (decision.shouldSpeak) await this.speak(decision.message)
+      }
+    })
+  }
+
+  _setupEventListeners() {
+    this.client.on('connection-change', async (payload) => {
+      if (payload.state === 'Closed' || payload.state === 'Fail') {
+        await this._handleMeetingEnd()
+      }
+    })
+  }
+
+  async speak(text) {
+    const audioBuffer = await generateSpeech(text)
+    // Convert MP3 to PCM 16kHz mono 16-bit for Zoom
+    const pcmAudio = await convertToPCM(audioBuffer, { sampleRate: 16000, channels: 1 })
+    await this.client.injectAudio(pcmAudio)
+    await this.state.logAgentSpeech(text)
+    console.log(`[ZoomBot] Agent spoke: ${text}`)
+  }
+
+  async _handleMeetingEnd() {
+    this.isActive = false
+    const { runPostMeetingPipeline } = require('../../actions/post-meeting')
+    await runPostMeetingPipeline(this.meetingId, this.state.getFullTranscript())
+  }
+}
+
+module.exports = { ZoomBot }
+```
+
+### 4.4 `bots/zoom/zoom-launcher.js` — Xvfb for Linux
+```javascript
+const { spawn } = require('child_process')
+
+async function launchZoomBot(meetingNumber, passcode, meetingId) {
+  // Start virtual display (Zoom SDK needs a display on Linux)
+  const xvfb = spawn('Xvfb', [':99', '-screen', '0', '1024x768x24'])
+  process.env.DISPLAY = ':99'
+
+  await new Promise(r => setTimeout(r, 1000)) // wait for Xvfb
+
+  const botProcess = spawn('electron', [
+    './bots/zoom/electron-main.js',
+    '--meeting-number', meetingNumber,
+    '--passcode', passcode,
+    '--meeting-id', meetingId
+  ], {
+    env: { ...process.env, DISPLAY: ':99' },
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  botProcess.stdout.on('data', d => console.log('[ZoomBot]', d.toString()))
+  botProcess.on('exit', () => xvfb.kill())
+
+  return botProcess
+}
+
+module.exports = { launchZoomBot }
+```
+
+---
+
+## 5. Shared STT Pipeline
+
+### `bots/shared/stt-stream.js`
+```javascript
+const { createClient, LiveTranscriptionEvents } = require('@deepgram/sdk')
+
+class DeepgramSTT {
+  constructor() {
+    this.client = createClient(process.env.DEEPGRAM_API_KEY)
+    this.connection = null
+  }
+
+  async connect() {
+    this.connection = this.client.listen.live({
+      model: 'nova-2',
+      language: 'en-US',
+      smart_format: true,
+      diarize: true,           // speaker identification
+      punctuate: true,
+      encoding: 'linear16',   // PCM 16-bit
+      sample_rate: 16000,
+      channels: 1,
+      interim_results: false,
+      utterance_end_ms: 1500,
+    })
+
+    return new Promise(resolve => {
+      this.connection.on(LiveTranscriptionEvents.Open, resolve)
+    })
+  }
+
+  async processChunk(pcmBuffer) {
+    if (!this.connection) await this.connect()
+
+    return new Promise(resolve => {
+      this.connection.on(LiveTranscriptionEvents.Transcript, (data) => {
+        const alt = data.channel?.alternatives?.[0]
+        if (!alt?.transcript) return resolve(null)
+        resolve({
+          text: alt.transcript,
+          confidence: alt.confidence,
+          speakerId: alt.words?.[0]?.speaker || 0,
+          timestamp: Date.now()
+        })
+      })
+      this.connection.send(pcmBuffer)
+    })
+  }
+
+  close() {
+    if (this.connection) this.connection.finish()
+  }
+}
+
+module.exports = { DeepgramSTT }
+```
+
+---
+
+## 6. Agent Brain — Claude API
+
+### `bots/shared/meeting-state.js`
+```javascript
+class MeetingState {
+  constructor(meetingId) {
+    this.meetingId = meetingId
+    this.transcript = []
+    this.openItems = []
+    this.decisions = []
+    this.actionItems = []
+    this.agentSpeeches = []
+    this.lastAgentCheckAt = 0
+    this.lastSpeechAt = Date.now()
+    this.AGENT_CHECK_INTERVAL = 20000
+  }
+
+  async addTranscript({ text, speaker, timestamp }) {
+    this.transcript.push({ text, speaker, timestamp })
+    this.lastSpeechAt = timestamp
+  }
+
+  shouldRunAgentCheck() {
+    const now = Date.now()
+    const silenceSince = now - this.lastSpeechAt
+    const timeSinceLastCheck = now - this.lastAgentCheckAt
+    const wordCount = this.transcript.reduce((acc, t) => acc + t.text.split(' ').length, 0)
+
+    // Only check if: 3s+ silence, 20s+ since last check, 100+ words transcribed
+    return silenceSince >= 3000 && timeSinceLastCheck >= 20000 && wordCount >= 100
+  }
+
+  getRecentTranscript(lastNSeconds = 120) {
+    const cutoff = Date.now() - (lastNSeconds * 1000)
+    return this.transcript
+      .filter(t => t.timestamp >= cutoff)
+      .map(t => `Speaker ${t.speaker}: ${t.text}`)
+      .join('\n')
+  }
+
+  getFullTranscript() {
+    return this.transcript.map(t => `Speaker ${t.speaker}: ${t.text}`).join('\n')
+  }
+
+  async logAgentSpeech(text) {
+    this.agentSpeeches.push({ text, timestamp: Date.now() })
+    this.lastAgentCheckAt = Date.now()
+  }
+
+  updateLastAgentCheck() {
+    this.lastAgentCheckAt = Date.now()
+  }
+}
+
+module.exports = { MeetingState }
+```
+
+### `bots/shared/agent-brain.js`
+```javascript
+const Anthropic = require('@anthropic-ai/sdk')
+const { AGENT_SYSTEM_PROMPT, POST_MEETING_SYSTEM_PROMPT, buildAgentCheckPrompt, buildPostMeetingPrompt } = require('./prompts')
+
+class AgentBrain {
+  constructor(meetingState) {
+    this.state = meetingState
+    this.client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+    this.checkModel  = 'claude-haiku-4-5-20251001'    // cheap — runs every 20s
+    this.actionModel = 'claude-sonnet-4-20250514'     // quality — post-meeting only
+  }
+
+  async evaluate() {
+    const recentTranscript = this.state.getRecentTranscript(120)
+    if (!recentTranscript.trim()) return { shouldSpeak: false }
+
+    const response = await this.client.messages.create({
+      model: this.checkModel,
+      max_tokens: 256,
+      system: AGENT_SYSTEM_PROMPT,
+      messages: [{
+        role: 'user',
+        content: buildAgentCheckPrompt({
+          recentTranscript,
+          openItems: this.state.openItems,
+          decisions: this.state.decisions,
+          agentSpeeches: this.state.agentSpeeches,
+          silenceDuration: Date.now() - this.state.lastSpeechAt
+        })
+      }]
+    })
+
+    this.state.updateLastAgentCheck()
+
+    try {
+      const text = response.content[0].text
+      return JSON.parse(text.replace(/```json|```/g, '').trim())
+    } catch (e) {
+      console.error('[AgentBrain] Parse error:', e.message)
+      return { shouldSpeak: false }
+    }
+  }
+
+  async generatePostMeetingOutput(fullTranscript, config) {
+    const response = await this.client.messages.create({
+      model: this.actionModel,
+      max_tokens: 2000,
+      system: POST_MEETING_SYSTEM_PROMPT,
+      messages: [{
+        role: 'user',
+        content: buildPostMeetingPrompt(fullTranscript, config)
+      }]
+    })
+
+    const text = response.content[0].text
+    return JSON.parse(text.replace(/```json|```/g, '').trim())
+  }
+}
+
+module.exports = { AgentBrain }
+```
+
+---
+
+## 7. Agent Behavior & Prompt System
+
+### `bots/shared/prompts.js`
+
+```javascript
+const AGENT_SYSTEM_PROMPT = `
+You are Aria, a professional AI meeting assistant.
+You attend meetings as an active participant — not a passive recorder.
+
+YOUR PERSONALITY:
+- Professional but warm. Concise. Never verbose.
+- You speak only when you add genuine value.
+- You never interrupt someone mid-sentence.
+- You ask ONE question at a time — never multiple at once.
+- Your spoken messages are under 20 words.
+- You acknowledge important decisions: "Got it, noted."
+
+WHEN YOU SHOULD SPEAK:
+1. A task mentioned but no owner assigned
+   → "Who is taking ownership of [task]?"
+2. A deadline is vague ("soon", "next week", "ASAP")
+   → "Just to confirm — is that deadline [specific date]?"
+3. A decision contradicts a previous meeting
+   → "Quick note — last session we agreed on X. Are we changing that?"
+4. An important topic raised but dropped without resolution
+   → "Before we move on — [topic] wasn't resolved. Should we park it?"
+5. Someone was asked a direct question but never answered
+   → "[Name], did you want to respond to that?"
+
+WHEN YOU MUST NOT SPEAK:
+- Someone is mid-sentence
+- Group is in focused problem-solving flow
+- You already spoke in the last 2 minutes
+- Topic is sensitive, personal, or emotional
+- Less than 3 seconds of silence
+- You have nothing genuinely useful to add
+
+OUTPUT FORMAT — always respond with valid JSON only, no preamble:
+{
+  "shouldSpeak": true or false,
+  "message": "your exact spoken words (only if shouldSpeak is true)",
+  "reason": "internal reasoning — why speaking or not",
+  "detectedItems": {
+    "newActionItem": null or { "task": string, "owner": string or null, "deadline": string or null },
+    "newDecision": null or { "description": string },
+    "openQuestion": null or { "question": string }
+  }
+}
+`
+
+const POST_MEETING_SYSTEM_PROMPT = `
+You are an expert meeting analyst. You receive a full meeting transcript
+and produce structured, actionable output.
+
+ALWAYS respond with valid JSON in this exact structure, no preamble:
+{
+  "summary": "concise 3-5 sentence meeting summary",
+  "keyDecisions": ["decision 1", "decision 2"],
+  "actionItems": [
+    {
+      "task": "specific task description",
+      "owner": "person name or null",
+      "deadline": "specific date or null",
+      "priority": "high | medium | low"
+    }
+  ],
+  "unresolvedItems": ["item 1", "item 2"],
+  "followUpEmail": {
+    "subject": "email subject line",
+    "body": "full email body — professional, concise, bullet action items with owners and deadlines"
+  },
+  "jiraTickets": [
+    {
+      "title": "ticket title",
+      "description": "detailed description",
+      "assignee": "person name or null",
+      "priority": "High | Medium | Low",
+      "labels": ["label1"]
+    }
+  ],
+  "nextMeetingAgenda": [
+    "Agenda item 1 — owner: Name",
+    "Agenda item 2 — follow up on: X"
+  ],
+  "slackSummary": "2-3 line Slack message with key points and @mentions"
+}
+
+Be specific. Use names from the transcript. Never be vague.
+If something has no clear owner, flag it explicitly.
+`
+
+function buildAgentCheckPrompt({ recentTranscript, openItems, decisions, agentSpeeches, silenceDuration }) {
+  const lastSpeech = agentSpeeches.length > 0 ? agentSpeeches[agentSpeeches.length - 1] : null
+  const timeSinceLast = lastSpeech ? Math.round((Date.now() - lastSpeech.timestamp) / 1000) : 999
+
+  return `
+CURRENT MEETING CONTEXT:
+
+=== LAST 2 MINUTES OF CONVERSATION ===
+${recentTranscript}
+
+=== OPEN ITEMS (unresolved) ===
+${openItems.length > 0 ? openItems.map(i => '- ' + i).join('\n') : 'None yet'}
+
+=== DECISIONS MADE SO FAR ===
+${decisions.length > 0 ? decisions.map(d => '- ' + d).join('\n') : 'None yet'}
+
+=== YOUR LAST INTERVENTION ===
+${lastSpeech ? `You said: "${lastSpeech.text}" (${timeSinceLast} seconds ago)` : 'You have not spoken yet'}
+
+=== CURRENT STATE ===
+- Seconds of silence since last speech: ${Math.round(silenceDuration / 1000)}
+- Seconds since your last question: ${timeSinceLast}
+
+Should you speak right now?
+Rules: Only speak if silence > 3s AND you have not spoken in last 120s AND there is genuine ambiguity, missing owner, or unresolved item.
+
+Respond with JSON only. No preamble.`
+}
+
+function buildPostMeetingPrompt(fullTranscript, config = {}) {
+  return `
+Meeting title: ${config.meetingTitle || 'Untitled Meeting'}
+Attendees: ${config.attendees?.join(', ') || 'Unknown'}
+${config.previousContext ? `Previous meeting context:\n${config.previousContext}` : ''}
+
+=== FULL TRANSCRIPT ===
+${fullTranscript}
+
+Generate the complete post-meeting output JSON now.`
+}
+
+module.exports = {
+  AGENT_SYSTEM_PROMPT,
+  POST_MEETING_SYSTEM_PROMPT,
+  buildAgentCheckPrompt,
+  buildPostMeetingPrompt
+}
+```
+
+---
+
+## 8. TTS — Agent Voice
+
+### `bots/shared/tts-engine.js`
+```javascript
+const OpenAI = require('openai')
+const crypto = require('crypto')
+const fs = require('fs')
+const path = require('path')
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+const CACHE_DIR = './tts-cache'
+
+// Pre-warm cache on startup with common agent phrases
+const COMMON_PHRASES = [
+  'Got it, noted.',
+  'Just to confirm — who is taking ownership of that?',
+  'Before we move on, that was not fully resolved.',
+  'Could you clarify the deadline on that?',
+  'Understood, I have logged that as an action item.',
+  'Quick note — that topic came up last session too.',
+  'Should we park that for a follow-up?',
+  'Who is the best person to own this?',
+]
+
+if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR)
+
+async function generateSpeech(text) {
+  const hash = crypto.createHash('md5').update(text).digest('hex')
+  const cachePath = path.join(CACHE_DIR, `${hash}.mp3`)
+
+  // Return cached audio if available
+  if (fs.existsSync(cachePath)) {
+    return fs.readFileSync(cachePath)
+  }
+
+  const response = await openai.audio.speech.create({
+    model: 'tts-1',
+    voice: 'nova',
+    input: text,
+    speed: 0.95,  // slightly slower = more natural
+  })
+
+  const buffer = Buffer.from(await response.arrayBuffer())
+  fs.writeFileSync(cachePath, buffer)
+  return buffer
+}
+
+async function preCacheCommonPhrases() {
+  console.log('[TTS] Pre-caching common phrases...')
+  for (const phrase of COMMON_PHRASES) {
+    await generateSpeech(phrase)
+  }
+  console.log('[TTS] Pre-cache complete')
+}
+
+module.exports = { generateSpeech, preCacheCommonPhrases }
+```
+
+---
+
+## 9. Post-Meeting Actions
+
+### `actions/post-meeting.js`
+```javascript
+const { AgentBrain } = require('../bots/shared/agent-brain')
+const { sendFollowUpEmail } = require('./email-sender')
+const { createJiraTickets } = require('./jira-tickets')
+const { postToSlack } = require('./slack-notify')
+const db = require('../db')
+
+async function runPostMeetingPipeline(meetingId, fullTranscript) {
+  console.log(`[PostMeeting] Starting pipeline for: ${meetingId}`)
+
+  const meeting = await db.getMeetingWithConfig(meetingId)
+  const user = await db.getUserWithIntegrations(meeting.userId)
+
+  // ONE Claude call — returns everything structured
+  const brain = new AgentBrain(null)
+  const output = await brain.generatePostMeetingOutput(fullTranscript, {
+    meetingTitle: meeting.title,
+    attendees: meeting.attendees,
+    previousContext: meeting.previousMeetingContext
+  })
+
+  // Kick off all actions in parallel
+  const tasks = [
+    db.saveMeetingOutput(meetingId, output)
+  ]
+
+  if (user.integrations.gmail && meeting.config.sendEmail !== false) {
+    tasks.push(sendFollowUpEmail({
+      to: meeting.attendees,
+      subject: output.followUpEmail.subject,
+      body: output.followUpEmail.body,
+      credentials: user.integrations.gmail
+    }))
+  }
+
+  if (user.integrations.jira && output.jiraTickets.length > 0) {
+    tasks.push(createJiraTickets({
+      tickets: output.jiraTickets,
+      projectKey: meeting.config.jiraProjectKey,
+      credentials: user.integrations.jira
+    }))
+  }
+
+  if (user.integrations.slack && meeting.config.slackChannelId) {
+    tasks.push(postToSlack({
+      channelId: meeting.config.slackChannelId,
+      message: output.slackSummary,
+      actionItems: output.actionItems,
+      credentials: user.integrations.slack
+    }))
+  }
+
+  const results = await Promise.allSettled(tasks)
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') console.error(`[PostMeeting] Task ${i} failed:`, r.reason)
+  })
+
+  console.log('[PostMeeting] Pipeline complete')
+  return output
+}
+
+module.exports = { runPostMeetingPipeline }
+```
+
+### `actions/email-sender.js`
+```javascript
+const { google } = require('googleapis')
+
+async function sendFollowUpEmail({ to, subject, body, credentials }) {
+  const oauth2Client = new google.auth.OAuth2()
+  oauth2Client.setCredentials(credentials) // user's stored OAuth tokens
+
+  const gmail = google.gmail({ version: 'v1', auth: oauth2Client })
+
+  const email = [
+    `To: ${to.join(', ')}`,
+    `Subject: ${subject}`,
+    'Content-Type: text/plain; charset=utf-8',
+    '',
+    body
+  ].join('\n')
+
+  await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: { raw: Buffer.from(email).toString('base64url') }
+  })
+
+  console.log(`[Email] Sent to ${to.length} recipients`)
+}
+
+module.exports = { sendFollowUpEmail }
+```
+
+### `actions/jira-tickets.js`
+```javascript
+const axios = require('axios')
+
+async function createJiraTickets({ tickets, projectKey, credentials }) {
+  const { domain, email, apiToken } = credentials
+  const auth = Buffer.from(`${email}:${apiToken}`).toString('base64')
+  const created = []
+
+  for (const ticket of tickets) {
+    const res = await axios.post(
+      `https://${domain}.atlassian.net/rest/api/3/issue`,
+      {
+        fields: {
+          project: { key: projectKey },
+          summary: ticket.title,
+          description: {
+            type: 'doc', version: 1,
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: ticket.description }] }]
+          },
+          issuetype: { name: 'Task' },
+          priority: { name: ticket.priority },
+          labels: ticket.labels || []
+        }
+      },
+      { headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/json' } }
+    )
+    created.push(res.data.key)
+    console.log(`[Jira] Created: ${res.data.key}`)
+  }
+
+  return created
+}
+
+module.exports = { createJiraTickets }
+```
+
+### `actions/slack-notify.js`
+```javascript
+const { WebClient } = require('@slack/web-api')
+
+async function postToSlack({ channelId, message, actionItems, credentials }) {
+  const slack = new WebClient(credentials.accessToken)
+
+  const actionBlock = actionItems.map(a =>
+    `• ${a.task}${a.owner ? ` — *${a.owner}*` : ''}${a.deadline ? ` (due ${a.deadline})` : ''}`
+  ).join('\n')
+
+  await slack.chat.postMessage({
+    channel: channelId,
+    text: message,
+    blocks: [
+      { type: 'section', text: { type: 'mrkdwn', text: `*Meeting Summary*\n${message}` } },
+      ...(actionItems.length > 0 ? [{
+        type: 'section',
+        text: { type: 'mrkdwn', text: `*Action Items:*\n${actionBlock}` }
+      }] : [])
+    ]
+  })
+
+  console.log(`[Slack] Posted to channel: ${channelId}`)
+}
+
+module.exports = { postToSlack }
+```
+
+---
+
+## 10. Database Schema
+
+### `db/schema.sql`
+```sql
+-- Users
+CREATE TABLE users (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  clerk_id           VARCHAR(255) UNIQUE NOT NULL,
+  email              VARCHAR(255) UNIQUE NOT NULL,
+  plan               VARCHAR(50) DEFAULT 'trial',
+  minutes_used       INTEGER DEFAULT 0,
+  minutes_quota      INTEGER DEFAULT 60,
+  stripe_customer_id VARCHAR(255),
+  created_at         TIMESTAMP DEFAULT NOW()
+);
+
+-- Meetings
+CREATE TABLE meetings (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      UUID REFERENCES users(id) ON DELETE CASCADE,
+  platform     VARCHAR(20) NOT NULL,     -- 'zoom' or 'meet'
+  meeting_url  VARCHAR(500) NOT NULL,
+  title        VARCHAR(255),
+  status       VARCHAR(50) DEFAULT 'scheduled',  -- scheduled, active, completed, failed
+  started_at   TIMESTAMP,
+  ended_at     TIMESTAMP,
+  duration_mins INTEGER,
+  attendees    TEXT[],
+  config       JSONB DEFAULT '{}',
+  created_at   TIMESTAMP DEFAULT NOW()
+);
+
+-- Meeting AI outputs
+CREATE TABLE meeting_outputs (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  meeting_id        UUID REFERENCES meetings(id) ON DELETE CASCADE,
+  transcript        TEXT,
+  summary           TEXT,
+  key_decisions     TEXT[],
+  action_items      JSONB,
+  unresolved_items  TEXT[],
+  follow_up_email   JSONB,
+  jira_tickets      JSONB,
+  next_agenda       TEXT[],
+  slack_summary     TEXT,
+  actions_taken     JSONB DEFAULT '{}',
+  created_at        TIMESTAMP DEFAULT NOW()
+);
+
+-- User integrations (OAuth tokens per user, encrypted)
+CREATE TABLE user_integrations (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID REFERENCES users(id) ON DELETE CASCADE,
+  service     VARCHAR(50) NOT NULL,   -- 'jira', 'slack', 'gmail'
+  credentials JSONB NOT NULL,         -- encrypted OAuth tokens
+  config      JSONB DEFAULT '{}',     -- jira project key, slack channel etc.
+  is_active   BOOLEAN DEFAULT true,
+  created_at  TIMESTAMP DEFAULT NOW(),
+  UNIQUE(user_id, service)
+);
+
+-- Usage tracking for billing
+CREATE TABLE usage_events (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID REFERENCES users(id),
+  meeting_id  UUID REFERENCES meetings(id),
+  minutes     INTEGER NOT NULL,
+  cost_usd    DECIMAL(10, 4),
+  recorded_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX idx_meetings_user_id ON meetings(user_id);
+CREATE INDEX idx_meetings_status ON meetings(status);
+CREATE INDEX idx_outputs_meeting_id ON meeting_outputs(meeting_id);
+CREATE INDEX idx_usage_user_id ON usage_events(user_id);
+```
+
+---
+
+## 11. Backend API & Bot Orchestrator
+
+### `api/server.js`
+```javascript
+const express = require('express')
+const { clerkMiddleware, requireAuth } = require('@clerk/express')
+const meetingsRouter = require('./routes/meetings')
+const usersRouter = require('./routes/users')
+const webhooksRouter = require('./routes/webhooks')
+
+const app = express()
+
+app.use(clerkMiddleware())
+app.use('/webhooks', express.raw({ type: 'application/json' }), webhooksRouter)
+app.use(express.json())
+
+app.use('/api/meetings', requireAuth(), meetingsRouter)
+app.use('/api/users', requireAuth(), usersRouter)
+
+app.listen(process.env.PORT || 3001, () => {
+  console.log(`[API] Running on port ${process.env.PORT || 3001}`)
+})
+```
+
+### `api/routes/meetings.js`
+```javascript
+const router = require('express').Router()
+const { launchMeetBot } = require('../../bots/bot-orchestrator')
+const db = require('../../db')
+
+// POST /api/meetings/schedule
+router.post('/schedule', async (req, res) => {
+  const { meetingUrl, title, attendees, config } = req.body
+  const userId = req.auth.userId
+
+  const platform = meetingUrl.includes('zoom.us') ? 'zoom'
+                 : meetingUrl.includes('meet.google.com') ? 'meet'
+                 : null
+
+  if (!platform) {
+    return res.status(400).json({ error: 'Unsupported platform. Use Zoom or Google Meet.' })
+  }
+
+  // Check minutes quota
+  const user = await db.getUserById(userId)
+  if (user.minutes_used >= user.minutes_quota) {
+    return res.status(402).json({ error: 'Meeting minutes quota exceeded. Please upgrade your plan.' })
+  }
+
+  const meeting = await db.createMeeting({ userId, platform, meetingUrl, title, attendees, config })
+
+  // Launch bot non-blocking
+  launchMeetBot(meeting).catch(e => console.error('[API] Bot launch failed:', e))
+
+  res.json({ meetingId: meeting.id, status: 'bot_joining', platform })
+})
+
+// GET /api/meetings/:id
+router.get('/:id', async (req, res) => {
+  const meeting = await db.getMeetingWithOutput(req.params.id, req.auth.userId)
+  if (!meeting) return res.status(404).json({ error: 'Not found' })
+  res.json(meeting)
+})
+
+// GET /api/meetings
+router.get('/', async (req, res) => {
+  const meetings = await db.getUserMeetings(req.auth.userId, {
+    limit: 20,
+    offset: parseInt(req.query.offset) || 0
+  })
+  res.json(meetings)
+})
+
+module.exports = router
+```
+
+### `bots/bot-orchestrator.js`
+```javascript
+const { launchZoomBot } = require('./zoom/zoom-launcher')
+const { MeetBot } = require('./meet/meet-bot')
+const db = require('../db')
+
+const activeBots = new Map() // meetingId → bot instance
+
+async function launchMeetBot(meeting) {
+  await db.updateMeetingStatus(meeting.id, 'active')
+
+  if (meeting.platform === 'zoom') {
+    const { meetingNumber, passcode } = parseZoomUrl(meeting.meetingUrl)
+    await launchZoomBot(meetingNumber, passcode, meeting.id)
+
+  } else if (meeting.platform === 'meet') {
+    const user = await db.getUserById(meeting.userId)
+    const bot = new MeetBot(meeting.meetingUrl, meeting.id, user.email)
+    activeBots.set(meeting.id, bot)
+    await bot.join()
+    activeBots.delete(meeting.id)
+  }
+
+  await db.updateMeetingStatus(meeting.id, 'completed')
+}
+
+function parseZoomUrl(url) {
+  const meetingMatch = url.match(/\/j\/(\d+)/)
+  const passcodeMatch = url.match(/pwd=([^&]+)/)
+  return {
+    meetingNumber: meetingMatch?.[1],
+    passcode: passcodeMatch?.[1] || ''
+  }
+}
+
+module.exports = { launchMeetBot }
+```
+
+---
+
+## 12. Billing & Stripe
+
+### Plans & Quotas
+| Plan | Price | Minutes/mo | Stripe Price ID |
+|---|---|---|---|
+| Trial | Free | 60 mins | N/A |
+| Starter | $19/mo | 500 mins | `price_starter_monthly` |
+| Growth | $49/mo | 1,500 mins | `price_growth_monthly` |
+| Scale | $129/mo | 5,000 mins | `price_scale_monthly` |
+
+### `api/routes/webhooks.js`
+```javascript
+const router = require('express').Router()
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
+const db = require('../../db')
+
+const PLAN_QUOTAS = {
+  price_starter_monthly: 500,
+  price_growth_monthly:  1500,
+  price_scale_monthly:   5000,
+}
+
+router.post('/stripe', async (req, res) => {
+  let event
+  try {
+    event = stripe.webhooks.constructEvent(
+      req.body,
+      req.headers['stripe-signature'],
+      process.env.STRIPE_WEBHOOK_SECRET
+    )
+  } catch (err) {
+    return res.status(400).send(`Webhook error: ${err.message}`)
+  }
+
+  switch (event.type) {
+    case 'checkout.session.completed': {
+      const session = event.data.object
+      const priceId = session.line_items?.data[0]?.price?.id
+      await db.updateUserPlan(session.client_reference_id, {
+        plan: 'active',
+        minutesQuota: PLAN_QUOTAS[priceId] || 500,
+        stripeCustomerId: session.customer
+      })
+      break
+    }
+    case 'customer.subscription.deleted': {
+      await db.updateUserPlan(event.data.object.metadata.userId, {
+        plan: 'trial',
+        minutesQuota: 60
+      })
+      break
+    }
+    case 'invoice.payment_failed': {
+      await db.notifyUserPaymentFailed(event.data.object.customer)
+      break
+    }
+  }
+
+  res.json({ received: true })
+})
+
+module.exports = router
+```
+
+---
+
+## 13. Deployment
+
+### Infrastructure — $30/mo fixed
+| Service | Runs | Cost |
+|---|---|---|
+| EC2 t3.medium | Bot processes + API + Redis | $30/mo |
+| Supabase free | PostgreSQL | $0 |
+| Vercel free | Next.js dashboard | $0 |
+| Clerk free | Auth (up to 10k MAU) | $0 |
+| Deepgram | Pay-per-minute (only when meetings happen) | $0 until users |
+| Anthropic | Pay-per-token (only when meetings happen) | $0 until users |
+| OpenAI | Pay-per-character TTS (only when meetings happen) | $0 until users |
+
+### EC2 Bootstrap Script
+```bash
+#!/bin/bash
+# Run once on fresh Ubuntu 22.04 EC2 t3.medium
+
+sudo apt-get update
+sudo apt-get install -y curl git build-essential
+sudo apt-get install -y xvfb libgtk-3-0 libnss3 libxss1 libasound2
+sudo apt-get install -y python3.11 python3-pip
+sudo apt-get install -y redis-server
+
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
+
+# Node.js 20
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+sudo npm install -g pm2
+
+# Clone repo
+git clone https://github.com/yourorg/ai-meeting-agent.git
+cd ai-meeting-agent
+npm install
+pip3 install -r requirements.txt
+
+# Copy and fill env
+cp .env.example .env
+nano .env  # fill in all credentials
+
+# Start services
+pm2 start ecosystem.config.js
+pm2 save
+pm2 startup
+```
+
+### `ecosystem.config.js`
+```javascript
+module.exports = {
+  apps: [
+    {
+      name: 'api-server',
+      script: './api/server.js',
+      instances: 1,
+      env: { NODE_ENV: 'production', PORT: 3001 }
+    },
+    {
+      name: 'action-worker',
+      script: './workers/action-queue.js',
+      instances: 2,
+      env: { NODE_ENV: 'production' }
+    }
+    // Bots are spawned dynamically per meeting — not managed by PM2
+  ]
+}
+```
+
+---
+
+## 14. Environment Variables
+
+| Variable | Required | Where to get it |
+|---|---|---|
+| `GOOGLE_SERVICE_ACCOUNT_PATH` | Yes | Google Cloud Console → Service Accounts → JSON key |
+| `GOOGLE_DELEGATED_EMAIL` | Yes | Your Google Workspace admin email |
+| `ZOOM_SDK_KEY` | Yes | marketplace.zoom.us → your app → Credentials |
+| `ZOOM_SDK_SECRET` | Yes | marketplace.zoom.us → your app → Credentials |
+| `DEEPGRAM_API_KEY` | Yes | deepgram.com → Console → API Keys |
+| `ANTHROPIC_API_KEY` | Yes | console.anthropic.com → API Keys |
+| `OPENAI_API_KEY` | Yes | platform.openai.com → API Keys |
+| `DATABASE_URL` | Yes | Supabase → Settings → Database → Connection string |
+| `REDIS_URL` | Yes | `redis://localhost:6379` (self-hosted on EC2) |
+| `CLERK_SECRET_KEY` | Yes | clerk.com → your app → API Keys |
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Yes | clerk.com → your app → API Keys |
+| `STRIPE_SECRET_KEY` | Yes | dashboard.stripe.com → Developers → API keys |
+| `STRIPE_WEBHOOK_SECRET` | Yes | Stripe → Webhooks → endpoint → Signing secret |
+| `JIRA_CLIENT_ID` | Optional | developer.atlassian.com → OAuth apps |
+| `JIRA_CLIENT_SECRET` | Optional | developer.atlassian.com → OAuth apps |
+| `SLACK_CLIENT_ID` | Optional | api.slack.com → Your apps → App credentials |
+| `SLACK_CLIENT_SECRET` | Optional | api.slack.com → Your apps → App credentials |
+| `BOT_DISPLAY_NAME` | Optional | Default: `Aria (AI Assistant)` |
+| `PORT` | Optional | Default: `3001` |
+
+---
+
+## 15. Week-by-Week Roadmap
+
+| Week | Focus | Deliverable | Fixed Cost |
+|---|---|---|---|
+| 1–2 | Google Meet Bot | Bot joins Meet, streams audio, transcript saved to DB | $30 |
+| 3–4 | Zoom Bot | Bot joins Zoom via SDK + Xvfb, same pipeline | $30 |
+| 5–6 | Agent Brain | Claude decision loop live, agent speaks back with TTS | $30 |
+| 7 | Post-Meeting | Email follow-up + Jira tickets from AI output | $30 |
+| 8 | Slack + Agenda | Slack summary + next agenda generation | $30 |
+| 9 | Dashboard | Next.js: schedule meetings, view outputs, manage integrations | $30 |
+| 10 | Billing | Stripe plans, minutes quota enforcement | $30 |
+| 11 | Beta | Onboard 10 free beta users, fix bugs | $30–50 |
+| 12 | Launch | Convert beta → paid, Product Hunt | Self-funding |
+
+### Total cost to first paying user: ~$330
+
+### What you have at Week 12
+- Bot running on both Zoom and Google Meet
+- Agent attends, speaks naturally, asks clarifying questions
+- Post-meeting: email, Jira tickets, Slack summary, agenda — all automated
+- Dashboard where users schedule meetings and review outputs
+- Stripe billing with three tiers
+- $30/mo fixed cost going forward
+- First revenue incoming
+
+---
+
+## Cost Per Meeting (Reference)
+
+| Component | Tool | Cost |
+|---|---|---|
+| STT (29 min avg) | Deepgram Nova-2 | $0.171 |
+| LLM in-meeting checks | Claude Haiku | $0.008 |
+| LLM post-meeting (1 call) | Claude Sonnet | $0.034 |
+| TTS agent voice | OpenAI TTS | $0.090 |
+| Server compute | EC2 amortized | $0.025 |
+| **Total per meeting** | | **~$0.33** |
+
+**Revenue per user at $19/mo (Starter, 4 meetings/week):** $19  
+**AI cost per user (16 meetings/mo):** ~$5.28  
+**Gross margin: ~72%**

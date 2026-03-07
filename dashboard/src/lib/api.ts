@@ -1,11 +1,25 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
 
+type ClerkWindow = Window & {
+  Clerk?: { session?: { getToken: () => Promise<string | null> }; load?: () => Promise<void> }
+}
+
+async function getClerkToken(): Promise<string | null> {
+  const clerk = (window as ClerkWindow).Clerk
+  if (!clerk) return null
+  // Wait for Clerk to finish loading if it hasn't yet
+  if (!clerk.session && clerk.load) await clerk.load()
+  return clerk.session?.getToken() ?? null
+}
+
 async function apiFetch(path: string, options: RequestInit = {}) {
+  const token = await getClerkToken()
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
-    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
   })

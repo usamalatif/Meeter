@@ -1,5 +1,7 @@
 node_modules/
 .env
+.env.local
+dashboard/.env.local
 credentials/
 tts-cache/
 dist/
@@ -7,3 +9,4 @@ dist/
 *.pyc
 __pycache__/
 .DS_Store
+meeter-venv
