@@ -36,9 +36,8 @@ async function generateSpeech(text) {
     fs.writeFileSync(cachePath, buffer)
   }
 
-  // Return both the buffer and the public URL path
-  const publicUrl = `${process.env.API_URL}/audio/${filename}`
-  return { buffer: fs.readFileSync(cachePath), publicUrl }
+  const fileBuffer = fs.readFileSync(cachePath)
+  return { buffer: fileBuffer, b64Data: fileBuffer.toString('base64') }
 }
 
 async function preCacheCommonPhrases() {

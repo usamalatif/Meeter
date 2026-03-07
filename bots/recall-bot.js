@@ -2,6 +2,13 @@ const axios = require('axios')
 
 const RECALL_API_BASE = `https://${process.env.RECALL_REGION || 'us-east-1'}.recall.ai/api/v1`
 
+// Minimal silent MP3 (1 frame, MPEG-1 Layer 3, 128kbps, 44100Hz)
+// Required as a placeholder to enable the output_audio endpoint per Recall docs
+const SILENT_MP3_B64 = Buffer.concat([
+  Buffer.from([0xff, 0xfb, 0x90, 0x00]),
+  Buffer.alloc(413)
+]).toString('base64')
+
 const recallClient = axios.create({
   baseURL: RECALL_API_BASE,
   headers: {
@@ -18,6 +25,11 @@ async function createRecallBot(meetingUrl, meetingId) {
     meeting_url: meetingUrl,
     bot_name: process.env.BOT_DISPLAY_NAME || 'Aria (AI Assistant)',
     metadata: { meetingId },
+    automatic_audio_output: {
+      in_call_recording: {
+        data: { kind: 'mp3', b64_data: SILENT_MP3_B64 }
+      }
+    },
     recording_config: {
       transcript: {
         provider: { meeting_captions: {} }
@@ -46,12 +58,12 @@ async function getRecallBot(recallBotId) {
   return data
 }
 
-async function speakInMeeting(recallBotId, audioUrl) {
+async function speakInMeeting(recallBotId, b64Data) {
   await recallClient.post(`/bot/${recallBotId}/output_audio`, {
     kind: 'mp3',
-    data: { url: audioUrl }
+    b64_data: b64Data
   })
-  console.log(`[Recall] Bot ${recallBotId} speaking: ${audioUrl}`)
+  console.log(`[Recall] Bot ${recallBotId} speaking (${b64Data.length} b64 chars)`)
 }
 
 module.exports = { createRecallBot, stopRecallBot, getRecallBot, speakInMeeting }

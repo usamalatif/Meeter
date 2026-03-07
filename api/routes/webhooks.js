@@ -96,8 +96,8 @@ router.post('/recall/transcript', express.json(), async (req, res) => {
       const decision = await context.brain.evaluate()
       if (decision.shouldSpeak && context.recallBotId) {
         console.log(`[Aria] Speaking: "${decision.message}"`)
-        const { publicUrl } = await generateSpeech(decision.message)
-        await speakInMeeting(context.recallBotId, publicUrl)
+        const { b64Data } = await generateSpeech(decision.message)
+        await speakInMeeting(context.recallBotId, b64Data)
         await context.state.logAgentSpeech(decision.message)
       }
     }
