@@ -2,7 +2,7 @@ const express = require('express')
 const router = express.Router()
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
 const db = require('../../db')
-const { getMeetingContext, removeMeeting } = require('../../bots/bot-orchestrator')
+const { getMeetingContext, getMeetingContextByBotId, removeMeeting } = require('../../bots/bot-orchestrator')
 const { enqueuePostMeeting } = require('../../workers/action-queue')
 const { speakInMeeting } = require('../../bots/recall-bot')
 const { generateSpeech } = require('../../bots/shared/tts-engine')
@@ -68,27 +68,31 @@ router.post('/stripe', async (req, res) => {
 })
 
 // ─── Recall.ai — Real-time transcript ────────────────────────────────────────
+// Payload from real_time_transcription: { transcript: { speaker, words, is_final, bot_id } }
 router.post('/recall/transcript', express.json(), async (req, res) => {
   res.json({ received: true }) // respond immediately so Recall doesn't retry
 
   try {
-    const { event, data } = req.body
-    if (event !== 'transcript.data') return
+    const { transcript } = req.body
+    if (!transcript) return
 
-    const meetingId = data.bot?.metadata?.meetingId
-    if (!meetingId) return
+    // Only process final (non-partial) results
+    if (transcript.is_final === false) return
 
-    const context = getMeetingContext(meetingId)
+    const recallBotId = transcript.bot_id
+    if (!recallBotId) return
+
+    const context = getMeetingContextByBotId(recallBotId)
     if (!context) return
 
-    const words = data.data?.words || []
+    const words = transcript.words || []
     const text = words.map(w => w.text).join(' ').trim()
-    const speaker = data.data?.participant?.name || 'Unknown'
+    const speaker = transcript.speaker || 'Unknown'
 
     if (!text) return
 
     await context.state.addTranscript({ text, speaker, timestamp: Date.now() })
-    console.log(`[Recall] [${meetingId}] ${speaker}: ${text}`)
+    console.log(`[Recall] [${recallBotId}] ${speaker}: ${text}`)
 
     if (context.state.shouldRunAgentCheck()) {
       const decision = await context.brain.evaluate()
@@ -110,8 +114,12 @@ router.post('/recall/status', express.json(), async (req, res) => {
 
   try {
     const { event, data } = req.body
-    const meetingId = data.bot?.metadata?.meetingId
-    if (!meetingId) return
+    // Support both webhook_url payload (data.bot.metadata) and fallback via bot_id lookup
+    const meetingId = data?.bot?.metadata?.meetingId || data?.metadata?.meetingId
+    if (!meetingId) {
+      console.warn('[Recall/Status] Could not extract meetingId from payload:', JSON.stringify(data))
+      return
+    }
 
     console.log(`[Recall] Status event: ${event} for meeting: ${meetingId}`)
 

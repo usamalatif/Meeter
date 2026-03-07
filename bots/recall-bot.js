@@ -18,24 +18,10 @@ async function createRecallBot(meetingUrl, meetingId) {
     meeting_url: meetingUrl,
     bot_name: process.env.BOT_DISPLAY_NAME || 'Aria (AI Assistant)',
     metadata: { meetingId },
-    recording_config: {
-      transcript: {
-        provider: { meeting_captions: {} }
-      },
-      realtime_endpoints: [
-        {
-          type: 'webhook',
-          url: `${webhookBase}/webhooks/recall/transcript`,
-          events: ['transcript.data'],
-          metadata: { meetingId }
-        },
-        {
-          type: 'webhook',
-          url: `${webhookBase}/webhooks/recall/status`,
-          events: ['bot.done', 'bot.fatal', 'bot.call_ended'],
-          metadata: { meetingId }
-        }
-      ]
+    webhook_url: `${webhookBase}/webhooks/recall/status`,
+    real_time_transcription: {
+      destination_url: `${webhookBase}/webhooks/recall/transcript`,
+      partial_results: false
     }
   })
 
