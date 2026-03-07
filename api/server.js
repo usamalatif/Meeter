@@ -14,9 +14,21 @@ if (!fs.existsSync(TTS_CACHE_DIR)) fs.mkdirSync(TTS_CACHE_DIR, { recursive: true
 
 const app = express()
 
-// CORS for Next.js dashboard
+// CORS — allow dashboard in all environments
+const allowedOrigins = [
+  'http://localhost:3000',
+  process.env.DASHBOARD_URL,
+].filter(Boolean)
+
 app.use(cors({
-  origin: process.env.DASHBOARD_URL || 'http://localhost:3000',
+  origin: (origin, callback) => {
+    // Allow server-to-server requests (no origin) and allowed origins
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true)
+    } else {
+      callback(new Error(`CORS blocked: ${origin}`))
+    }
+  },
   credentials: true
 }))
 
