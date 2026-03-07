@@ -1,0 +1,7 @@
+google-auth>=2.36.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.159.0
+google-apps-meet>=0.1.0
+deepgram-sdk>=3.9.0
+asyncio>=3.4.3
+websockets>=14.1

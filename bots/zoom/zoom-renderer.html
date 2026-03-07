@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Zoom Bot</title>
+</head>
+<body>
+  <div id="meetingSDKElement"></div>
+  <script>
+    const { ipcRenderer } = require('electron')
+    const { ZoomBot } = require('./zoom-bot')
+
+    ipcRenderer.on('join-meeting', async (event, { meetingNumber, passcode, meetingId }) => {
+      try {
+        const bot = new ZoomBot(meetingNumber, passcode, meetingId)
+        await bot.join()
+        console.log('[ZoomRenderer] Bot joined successfully')
+      } catch (err) {
+        console.error('[ZoomRenderer] Failed to join:', err)
+        process.exit(1)
+      }
+    })
+  </script>
+</body>
+</html>
