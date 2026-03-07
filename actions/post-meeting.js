@@ -4,11 +4,16 @@ const { createJiraTickets } = require('./jira-tickets')
 const { postToSlack } = require('./slack-notify')
 const db = require('../db')
 
-async function runPostMeetingPipeline(meetingId, fullTranscript) {
+async function runPostMeetingPipeline(meetingId, recallBotId) {
   console.log(`[PostMeeting] Starting pipeline for: ${meetingId}`)
 
   const meeting = await db.getMeetingWithConfig(meetingId)
   const user = await db.getUserWithIntegrations(meeting.user_id)
+
+  // Fetch transcript from Recall — throws if not ready yet, BullMQ will retry
+  const { getRecallTranscript } = require('../bots/recall-bot')
+  const fullTranscript = await getRecallTranscript(recallBotId)
+  if (!fullTranscript) throw new Error(`Transcript not ready yet for bot ${recallBotId}`)
 
   // ONE Claude call — returns everything structured
   const brain = new AgentBrain(null)

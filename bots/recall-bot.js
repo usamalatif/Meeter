@@ -42,25 +42,20 @@ async function getRecallBot(recallBotId) {
 }
 
 async function getRecallTranscript(recallBotId) {
-  try {
-    const { data: bot } = await recallClient.get(`/bot/${recallBotId}`)
-    const downloadUrl = bot.media_shortcuts?.transcript?.data?.download_url
-    if (!downloadUrl) return ''
+  const { data: bot } = await recallClient.get(`/bot/${recallBotId}`)
+  const downloadUrl = bot.media_shortcuts?.transcript?.data?.download_url
+  if (!downloadUrl) return ''
 
-    const { data: segments } = await axios.get(downloadUrl)
-    if (!Array.isArray(segments)) return ''
+  const { data: segments } = await axios.get(downloadUrl)
+  if (!Array.isArray(segments) || segments.length === 0) return ''
 
-    return segments
-      .map(seg => {
-        const words = (seg.words || []).map(w => w.text).join(' ')
-        return `Speaker ${seg.speaker || 'Unknown'}: ${words}`
-      })
-      .filter(line => line.trim())
-      .join('\n')
-  } catch (err) {
-    console.error(`[Recall] Failed to fetch transcript for bot ${recallBotId}:`, err.message)
-    return ''
-  }
+  return segments
+    .map(seg => {
+      const words = (seg.words || []).map(w => w.text).join(' ')
+      return `Speaker ${seg.speaker || 'Unknown'}: ${words}`
+    })
+    .filter(line => line.trim())
+    .join('\n')
 }
 
 async function speakInMeeting(recallBotId, b64Data) {

@@ -4,7 +4,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
 const db = require('../../db')
 const { getMeetingContext, removeMeeting } = require('../../bots/bot-orchestrator')
 const { enqueuePostMeeting } = require('../../workers/action-queue')
-const { speakInMeeting, getRecallTranscript } = require('../../bots/recall-bot')
+const { speakInMeeting } = require('../../bots/recall-bot')
 const { generateSpeech } = require('../../bots/shared/tts-engine')
 
 const PLAN_QUOTAS = {
@@ -123,27 +123,24 @@ router.post('/recall/status', express.json(), async (req, res) => {
     console.log(`[Recall] Status event: ${event} for meeting: ${meetingId}`)
 
     if (event === 'bot.done') {
-      const recallBotId = data?.bot?.id
-      const context = getMeetingContext(meetingId)
       removeMeeting(meetingId)
-
-      // Mark completed immediately so frontend reflects it without waiting for worker
+      // Mark completed immediately so frontend reflects it
       await db.updateMeetingStatus(meetingId, 'completed')
+      // transcript.done fires separately when transcript is ready → triggers post-meeting
+    }
 
-      // Prefer transcript fetched directly from Recall (reliable), fall back to realtime state
-      let fullTranscript = context?.state?.getFullTranscript() || ''
-      if (!fullTranscript && recallBotId) {
-        console.log(`[Recall] Fetching transcript from Recall API for bot ${recallBotId}`)
-        fullTranscript = await getRecallTranscript(recallBotId)
-      }
-
-      console.log(`[Recall] Transcript length: ${fullTranscript.length} chars`)
-      await enqueuePostMeeting(meetingId, fullTranscript)
+    if (event === 'transcript.done') {
+      const recallBotId = data?.bot?.id
+      console.log(`[Recall] Transcript ready for meeting: ${meetingId}, bot: ${recallBotId}`)
+      await enqueuePostMeeting(meetingId, recallBotId)
         .catch(e => console.error('[Recall] Failed to enqueue post-meeting job:', e.message))
     }
 
+    if (event === 'transcript.failed') {
+      console.error(`[Recall] Transcript failed for meeting: ${meetingId}`, JSON.stringify(data?.data))
+    }
+
     if (event === 'bot.call_ended') {
-      // bot.done fires after this and handles the transcript — just clean up state here
       removeMeeting(meetingId)
     }
 

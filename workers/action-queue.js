@@ -10,8 +10,8 @@ const connection = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379'
 // Queue — always available for enqueueing (used by API server)
 const postMeetingQueue = new Queue('post-meeting', { connection })
 
-async function enqueuePostMeeting(meetingId, fullTranscript) {
-  await postMeetingQueue.add('process', { meetingId, fullTranscript }, {
+async function enqueuePostMeeting(meetingId, recallBotId) {
+  await postMeetingQueue.add('process', { meetingId, recallBotId }, {
     attempts: 3,
     backoff: { type: 'exponential', delay: 5000 }
   })
@@ -24,9 +24,9 @@ if (require.main === module) {
   const { runPostMeetingPipeline } = require('../actions/post-meeting')
 
   const worker = new Worker('post-meeting', async (job) => {
-    const { meetingId, fullTranscript } = job.data
+    const { meetingId, recallBotId } = job.data
     console.log(`[Worker] Processing post-meeting for: ${meetingId}`)
-    const output = await runPostMeetingPipeline(meetingId, fullTranscript)
+    const output = await runPostMeetingPipeline(meetingId, recallBotId)
     return { success: true, meetingId, summary: output.summary }
   }, {
     connection,
