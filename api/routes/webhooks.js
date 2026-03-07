@@ -4,7 +4,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
 const db = require('../../db')
 const { getMeetingContext, removeMeeting } = require('../../bots/bot-orchestrator')
 const { enqueuePostMeeting } = require('../../workers/action-queue')
-const { speakInMeeting } = require('../../bots/recall-bot')
+const { speakInMeeting, getRecallTranscript } = require('../../bots/recall-bot')
 const { generateSpeech } = require('../../bots/shared/tts-engine')
 
 const PLAN_QUOTAS = {
@@ -121,13 +121,26 @@ router.post('/recall/status', express.json(), async (req, res) => {
 
     console.log(`[Recall] Status event: ${event} for meeting: ${meetingId}`)
 
-    if (event === 'bot.done' || event === 'bot.call_ended') {
+    if (event === 'bot.done') {
+      const recallBotId = data?.bot?.id
       const context = getMeetingContext(meetingId)
-      const fullTranscript = context?.state?.getFullTranscript() || ''
       removeMeeting(meetingId)
 
+      // Prefer transcript fetched directly from Recall (reliable), fall back to realtime state
+      let fullTranscript = context?.state?.getFullTranscript() || ''
+      if (!fullTranscript && recallBotId) {
+        console.log(`[Recall] Fetching transcript from Recall API for bot ${recallBotId}`)
+        fullTranscript = await getRecallTranscript(recallBotId)
+      }
+
+      console.log(`[Recall] Transcript length: ${fullTranscript.length} chars`)
       await enqueuePostMeeting(meetingId, fullTranscript)
         .catch(e => console.error('[Recall] Failed to enqueue post-meeting job:', e.message))
+    }
+
+    if (event === 'bot.call_ended') {
+      // bot.done fires after this and handles the transcript — just clean up state here
+      removeMeeting(meetingId)
     }
 
     if (event === 'bot.fatal') {
