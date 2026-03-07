@@ -5,8 +5,6 @@ const db = require('../db')
 
 // meetingId → { state, brain, recallBotId }
 const activeMeetings = new Map()
-// recallBotId → meetingId (reverse lookup for transcript webhooks)
-const botIdToMeetingId = new Map()
 
 async function launchMeetBot(meeting) {
   await db.updateMeetingStatus(meeting.id, 'active')
@@ -22,7 +20,6 @@ async function launchMeetBot(meeting) {
       brain,
       recallBotId: recallBot.id
     })
-    botIdToMeetingId.set(recallBot.id, meeting.id)
 
     console.log(`[Orchestrator] Recall bot ${recallBot.id} launched for meeting ${meeting.id}`)
     return recallBot
@@ -40,18 +37,11 @@ function getMeetingContext(meetingId) {
 }
 
 function removeMeeting(meetingId) {
-  const ctx = activeMeetings.get(meetingId)
-  if (ctx) botIdToMeetingId.delete(ctx.recallBotId)
   activeMeetings.delete(meetingId)
-}
-
-function getMeetingContextByBotId(recallBotId) {
-  const meetingId = botIdToMeetingId.get(recallBotId)
-  return meetingId ? activeMeetings.get(meetingId) || null : null
 }
 
 function getActiveMeetings() {
   return Array.from(activeMeetings.keys())
 }
 
-module.exports = { launchMeetBot, getMeetingContext, getMeetingContextByBotId, removeMeeting, getActiveMeetings }
+module.exports = { launchMeetBot, getMeetingContext, removeMeeting, getActiveMeetings }
