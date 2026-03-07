@@ -32,7 +32,9 @@ async function createRecallBot(meetingUrl, meetingId) {
     },
     recording_config: {
       transcript: {
-        provider: { meeting_captions: {} }
+        provider: {
+          recallai_streaming: { mode: 'prioritize_low_latency' }
+        }
       },
       realtime_endpoints: [
         {
@@ -88,4 +90,4 @@ async function speakInMeeting(recallBotId, b64Data) {
   console.log(`[Recall] Bot ${recallBotId} speaking (${b64Data.length} b64 chars)`)
 }
 
-module.exports = { createRecallBot, stopRecallBot, getRecallBot, speakInMeeting }
+module.exports = { createRecallBot, stopRecallBot, getRecallBot, getRecallTranscript, speakInMeeting }

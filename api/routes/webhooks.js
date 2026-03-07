@@ -79,13 +79,14 @@ router.post('/recall/transcript', express.json(), async (req, res) => {
     const context = getMeetingContext(meetingId)
     if (!context) return
 
-    // recording_config realtime_endpoints payload: { event, data: { ... } }
+    // recording_config realtime_endpoints payload:
+    // { event: "transcript.data", data: { data: { words, participant }, bot: {...} } }
     const { event, data } = req.body
     if (event !== 'transcript.data') return
 
-    const words = data?.words || []
+    const words = data?.data?.words || []
     const text = words.map(w => w.text).join(' ').trim()
-    const speaker = data?.speaker || 'Unknown'
+    const speaker = data?.data?.participant?.name || 'Unknown'
 
     if (!text) return
 
