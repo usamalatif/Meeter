@@ -8,7 +8,7 @@ async function runPostMeetingPipeline(meetingId, fullTranscript) {
   console.log(`[PostMeeting] Starting pipeline for: ${meetingId}`)
 
   const meeting = await db.getMeetingWithConfig(meetingId)
-  const user = await db.getUserWithIntegrations(meeting.userId)
+  const user = await db.getUserWithIntegrations(meeting.user_id)
 
   // ONE Claude call — returns everything structured
   const brain = new AgentBrain(null)
@@ -20,7 +20,7 @@ async function runPostMeetingPipeline(meetingId, fullTranscript) {
 
   // Kick off all actions in parallel
   const tasks = [
-    db.saveMeetingOutput(meetingId, output)
+    db.saveMeetingOutput(meetingId, { ...output, transcript: fullTranscript || null })
   ]
 
   if (user.integrations.gmail && meeting.config.sendEmail !== false) {

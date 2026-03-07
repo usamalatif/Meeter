@@ -127,6 +127,9 @@ router.post('/recall/status', express.json(), async (req, res) => {
       const context = getMeetingContext(meetingId)
       removeMeeting(meetingId)
 
+      // Mark completed immediately so frontend reflects it without waiting for worker
+      await db.updateMeetingStatus(meetingId, 'completed')
+
       // Prefer transcript fetched directly from Recall (reliable), fall back to realtime state
       let fullTranscript = context?.state?.getFullTranscript() || ''
       if (!fullTranscript && recallBotId) {
