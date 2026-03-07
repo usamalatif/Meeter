@@ -24,7 +24,9 @@ async function launchMeetBot(meeting) {
     console.log(`[Orchestrator] Recall bot ${recallBot.id} launched for meeting ${meeting.id}`)
     return recallBot
   } catch (err) {
+    const recallError = err.response?.data
     console.error(`[Orchestrator] Bot launch failed for ${meeting.id}:`, err.message)
+    if (recallError) console.error(`[Recall API Error]:`, JSON.stringify(recallError))
     await db.updateMeetingStatus(meeting.id, 'failed')
     throw err
   }
