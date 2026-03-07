@@ -25,16 +25,9 @@ async function createRecallBot(meetingUrl, meetingId) {
     meeting_url: meetingUrl,
     bot_name: process.env.BOT_DISPLAY_NAME || 'Aria (AI Assistant)',
     metadata: { meetingId },
-    automatic_audio_output: {
-      in_call_recording: {
-        data: { kind: 'mp3', b64_data: SILENT_MP3_B64 }
-      }
-    },
     recording_config: {
       transcript: {
-        provider: {
-          recallai_streaming: { mode: 'prioritize_low_latency' }
-        }
+        provider: { meeting_captions: {} }
       },
       realtime_endpoints: [
         {
