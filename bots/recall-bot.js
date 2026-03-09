@@ -28,6 +28,19 @@ async function createRecallBot(meetingUrl, meetingId) {
     recording_config: {
       transcript: {
         provider: { meeting_captions: {} }
+      },
+      realtime_endpoints: [
+        {
+          type: 'webhook',
+          url: `${webhookBase}/webhooks/recall/transcript?meetingId=${meetingId}`,
+          events: ['transcript.data']
+        }
+      ]
+    },
+    automatic_audio_output: {
+      in_call_recording: {
+        kind: 'mp3',
+        b64_data: SILENT_MP3_B64
       }
     }
   })
@@ -48,8 +61,6 @@ async function getRecallBot(recallBotId) {
 
 async function getRecallTranscript(recallBotId) {
   const { data: bot } = await recallClient.get(`/bot/${recallBotId}`)
-  console.log(`[Recall] bot.recordings:`, JSON.stringify(bot.recordings))
-
   // Transcript lives inside recordings[0]
   const recording = bot.recordings?.[0]
   const downloadUrl = recording?.media_shortcuts?.transcript?.data?.download_url
