@@ -77,17 +77,24 @@ async function createMeeting({ userId, platform, meetingUrl, title, attendees, c
 }
 
 async function updateMeetingStatus(meetingId, status) {
-  const updates = { status }
-  if (status === 'active') updates.started_at = new Date()
-  if (status === 'completed') updates.ended_at = new Date()
-
-  const setClauses = Object.keys(updates).map((k, i) => `${k} = $${i + 2}`).join(', ')
-  const values = Object.values(updates)
-
-  await pool.query(
-    `UPDATE meetings SET ${setClauses} WHERE id = $1`,
-    [meetingId, ...values]
-  )
+  if (status === 'active') {
+    await pool.query(
+      `UPDATE meetings SET status = 'active', started_at = NOW() WHERE id = $1`,
+      [meetingId]
+    )
+  } else if (status === 'completed') {
+    await pool.query(
+      `UPDATE meetings SET status = 'completed', ended_at = NOW(),
+       duration_mins = ROUND(EXTRACT(EPOCH FROM (NOW() - COALESCE(started_at, NOW()))) / 60)
+       WHERE id = $1`,
+      [meetingId]
+    )
+  } else {
+    await pool.query(
+      `UPDATE meetings SET status = $2 WHERE id = $1`,
+      [meetingId, status]
+    )
+  }
 }
 
 async function getMeetingWithConfig(meetingId) {
@@ -132,6 +139,9 @@ async function getUserMeetings(userId, { limit = 20, offset = 0 } = {}) {
 // ─── Meeting Outputs ─────────────────────────────────────────────────────────
 
 async function saveMeetingOutput(meetingId, output) {
+  // Delete any existing output first so retries don't create duplicates
+  await pool.query('DELETE FROM meeting_outputs WHERE meeting_id = $1', [meetingId])
+
   const { rows } = await pool.query(
     `INSERT INTO meeting_outputs (meeting_id, transcript, summary, key_decisions, action_items,
        unresolved_items, follow_up_email, jira_tickets, next_agenda, slack_summary)

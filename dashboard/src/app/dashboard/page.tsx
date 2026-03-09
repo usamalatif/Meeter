@@ -31,6 +31,14 @@ export default function DashboardPage() {
     loadMeetings()
   }, [])
 
+  // Auto-refresh while any meeting is active or scheduled
+  useEffect(() => {
+    const hasLive = meetings.some(m => m.status === 'active' || m.status === 'scheduled')
+    if (!hasLive) return
+    const interval = setInterval(loadMeetings, 8000)
+    return () => clearInterval(interval)
+  }, [meetings])
+
   async function loadMeetings() {
     try {
       const data = await getMeetings()
