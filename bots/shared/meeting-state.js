@@ -22,8 +22,8 @@ class MeetingState {
     const timeSinceLastCheck = now - this.lastAgentCheckAt
     const wordCount = this.transcript.reduce((acc, t) => acc + t.text.split(' ').length, 0)
 
-    // Only check if: 3s+ silence, 20s+ since last check, 100+ words transcribed
-    return silenceSince >= 3000 && timeSinceLastCheck >= 20000 && wordCount >= 100
+    // Only check if: 3s+ silence, 20s+ since last check, 20+ words transcribed
+    return silenceSince >= 3000 && timeSinceLastCheck >= 20000 && wordCount >= 20
   }
 
   getRecentTranscript(lastNSeconds = 120) {

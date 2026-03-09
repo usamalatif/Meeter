@@ -4,8 +4,6 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
 const db = require('../../db')
 const { getMeetingContext, removeMeeting } = require('../../bots/bot-orchestrator')
 const { enqueuePostMeeting } = require('../../workers/action-queue')
-const { speakInMeeting } = require('../../bots/recall-bot')
-const { generateSpeech } = require('../../bots/shared/tts-engine')
 
 const PLAN_QUOTAS = {
   price_starter_monthly: 500,
@@ -92,16 +90,6 @@ router.post('/recall/transcript', express.json(), async (req, res) => {
 
     await context.state.addTranscript({ text, speaker, timestamp: Date.now() })
     console.log(`[Recall] [${meetingId}] ${speaker}: ${text}`)
-
-    if (context.state.shouldRunAgentCheck()) {
-      const decision = await context.brain.evaluate()
-      if (decision.shouldSpeak && context.recallBotId) {
-        console.log(`[Aria] Speaking: "${decision.message}"`)
-        const { b64Data } = await generateSpeech(decision.message)
-        await speakInMeeting(context.recallBotId, b64Data)
-        await context.state.logAgentSpeech(decision.message)
-      }
-    }
   } catch (err) {
     console.error('[Webhook/Recall/Transcript] Error:', err.message)
   }
