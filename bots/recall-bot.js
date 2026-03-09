@@ -39,8 +39,10 @@ async function createRecallBot(meetingUrl, meetingId) {
     },
     automatic_audio_output: {
       in_call_recording: {
-        kind: 'mp3',
-        b64_data: SILENT_MP3_B64
+        data: {
+          kind: 'mp3',
+          b64_data: SILENT_MP3_B64
+        }
       }
     }
   })
