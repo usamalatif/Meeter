@@ -48,9 +48,12 @@ async function getRecallBot(recallBotId) {
 
 async function getRecallTranscript(recallBotId) {
   const { data: bot } = await recallClient.get(`/bot/${recallBotId}`)
-  console.log(`[Recall] media_shortcuts for bot ${recallBotId}:`, JSON.stringify(bot.media_shortcuts))
+  console.log(`[Recall] bot keys:`, Object.keys(bot))
+  console.log(`[Recall] bot.media_shortcuts:`, JSON.stringify(bot.media_shortcuts))
+  console.log(`[Recall] bot.transcript:`, JSON.stringify(bot.transcript))
 
   const downloadUrl = bot.media_shortcuts?.transcript?.data?.download_url
+    || bot.transcript?.download_url
   if (!downloadUrl) return ''
 
   const { data: segments } = await axios.get(downloadUrl)
