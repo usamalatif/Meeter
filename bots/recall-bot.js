@@ -24,7 +24,12 @@ async function createRecallBot(meetingUrl, meetingId) {
   const { data } = await recallClient.post('/bot', {
     meeting_url: meetingUrl,
     bot_name: process.env.BOT_DISPLAY_NAME || 'Aria (AI Assistant)',
-    metadata: { meetingId }
+    metadata: { meetingId },
+    recording_config: {
+      transcript: {
+        provider: { meeting_captions: {} }
+      }
+    }
   })
 
   console.log(`[Recall] Bot created: ${data.id} for meeting: ${meetingId}`)
