@@ -48,10 +48,13 @@ async function getRecallBot(recallBotId) {
 
 async function getRecallTranscript(recallBotId) {
   const { data: bot } = await recallClient.get(`/bot/${recallBotId}`)
+  console.log(`[Recall] media_shortcuts for bot ${recallBotId}:`, JSON.stringify(bot.media_shortcuts))
+
   const downloadUrl = bot.media_shortcuts?.transcript?.data?.download_url
   if (!downloadUrl) return ''
 
   const { data: segments } = await axios.get(downloadUrl)
+  console.log(`[Recall] Transcript segments (first 2):`, JSON.stringify(segments?.slice(0, 2)))
   if (!Array.isArray(segments) || segments.length === 0) return ''
 
   return segments
