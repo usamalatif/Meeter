@@ -96,33 +96,33 @@ Be specific. Use names from the transcript. Never be vague.
 If something has no clear owner, flag it explicitly.
 `
 
-function buildAgentCheckPrompt({ recentTranscript, openItems, decisions, agentSpeeches, silenceDuration }) {
-  const lastSpeech = agentSpeeches.length > 0 ? agentSpeeches[agentSpeeches.length - 1] : null
-  const timeSinceLast = lastSpeech ? Math.round((Date.now() - lastSpeech.timestamp) / 1000) : 999
-
+function buildAgentCheckPrompt({ fullConversation, openItems, decisions, silenceDuration }) {
   return `
-CURRENT MEETING CONTEXT:
+=== FULL MEETING CONVERSATION ===
+(Includes everything said by participants AND your own previous questions marked as "Aria:")
 
-=== LAST 2 MINUTES OF CONVERSATION ===
-${recentTranscript}
+${fullConversation}
 
-=== OPEN ITEMS (flagged as unresolved) ===
-${openItems.length > 0 ? openItems.map(i => '- ' + i).join('\n') : 'None yet'}
+=== OPEN ITEMS ===
+${openItems.length > 0 ? openItems.map(i => '- ' + i).join('\n') : 'None'}
 
-=== DECISIONS CAPTURED SO FAR ===
-${decisions.length > 0 ? decisions.map(d => '- ' + d).join('\n') : 'None yet'}
+=== DECISIONS CAPTURED ===
+${decisions.length > 0 ? decisions.map(d => '- ' + d).join('\n') : 'None'}
 
-=== YOUR LAST QUESTION ===
-${lastSpeech ? `You said: "${lastSpeech.text}" (${timeSinceLast} seconds ago)` : 'You have not spoken yet'}
+=== SILENCE ===
+Seconds since last person spoke: ${Math.round(silenceDuration / 1000)}
 
-=== TIMING ===
-- Seconds of silence: ${Math.round(silenceDuration / 1000)}
-- Seconds since your last question: ${timeSinceLast}
+YOUR TASK:
+Read the full conversation above — including your own previous questions (marked "Aria:") and what participants said after them.
 
-Your task: Look at what was just discussed and identify the SINGLE most important piece of information that is still missing — something that, if not captured now, will require a follow-up call later.
+Identify the single most important piece of information that is STILL MISSING — something that, if not captured now, will require a follow-up call later.
 
-If a critical gap exists AND silence > 3s AND you have not spoken in the last 90s → ask ONE short question to fill it.
-If everything important is already captured, or someone is still talking → stay silent.
+STRICT RULES:
+1. NEVER ask about something that was already answered anywhere in the conversation — even if you asked earlier
+2. NEVER ask if you have an unanswered "Aria:" question already in the conversation above
+3. Only speak if silence > 3 seconds
+4. Ask exactly one short question (under 15 words)
+5. If all important information is captured → stay silent
 
 Respond with JSON only. No preamble.`
 }

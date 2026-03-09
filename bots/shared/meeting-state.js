@@ -38,6 +38,17 @@ class MeetingState {
     return this.transcript.map(t => `Speaker ${t.speaker}: ${t.text}`).join('\n')
   }
 
+  // Full conversation with Aria's own questions interleaved in chronological order
+  // This lets Aria see what she already asked and what was answered — preventing repeats
+  getFullConversation() {
+    const entries = [
+      ...this.transcript.map(t => ({ timestamp: t.timestamp, speaker: t.speaker, text: t.text })),
+      ...this.agentSpeeches.map(s => ({ timestamp: s.timestamp, speaker: 'Aria', text: s.text }))
+    ]
+    entries.sort((a, b) => a.timestamp - b.timestamp)
+    return entries.map(e => `${e.speaker}: ${e.text}`).join('\n')
+  }
+
   async logAgentSpeech(text) {
     this.agentSpeeches.push({ text, timestamp: Date.now() })
     this.lastAgentCheckAt = Date.now()

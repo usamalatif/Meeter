@@ -15,8 +15,8 @@ class AgentBrain {
   }
 
   async evaluate() {
-    const recentTranscript = this.state.getRecentTranscript(120)
-    if (!recentTranscript.trim()) return { shouldSpeak: false }
+    const fullConversation = this.state.getFullConversation()
+    if (!fullConversation.trim()) return { shouldSpeak: false }
 
     const response = await this.client.chat.completions.create({
       model: this.checkModel,
@@ -27,10 +27,9 @@ class AgentBrain {
         {
           role: 'user',
           content: buildAgentCheckPrompt({
-            recentTranscript,
+            fullConversation,
             openItems: this.state.openItems,
             decisions: this.state.decisions,
-            agentSpeeches: this.state.agentSpeeches,
             silenceDuration: Date.now() - this.state.lastSpeechAt
           })
         }
