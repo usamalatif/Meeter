@@ -35,7 +35,7 @@ async function launchMeetBot(meeting) {
       } catch (err) {
         console.error('[Aria] Agent check error:', err.message)
       }
-    }, 5000)
+    }, 2000)
 
     activeMeetings.set(meeting.id, {
       state,
